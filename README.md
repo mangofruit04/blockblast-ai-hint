@@ -45,7 +45,7 @@ python main.py
 
 ## 📸 Screenshots
 
-![AI Hint](Screenshot 2026-07-07 204038.png)
+![AI Hint]https://github.com/mangofruit04/blockblast-ai-hint/blob/main/Screenshot%202026-07-07%20204038.png
 
 ## 👩‍💻 Author
 
