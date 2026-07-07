@@ -1,0 +1,390 @@
+import pygame
+import sys
+import random
+import heapq
+import itertools
+
+# Game settings
+WIDTH, HEIGHT = 400, 600
+FPS = 30
+
+# Grid settings
+GRID_SIZE = 9
+CELL_SIZE = 32
+GRID_WIDTH = GRID_SIZE * CELL_SIZE
+GRID_HEIGHT = GRID_SIZE * CELL_SIZE
+GRID_START_X = (WIDTH - GRID_WIDTH) // 2
+GRID_START_Y = 80
+
+# Colors
+BG_COLOR = (40, 50, 100)
+MENU_BG_COLOR = (30, 35, 60)
+GRID_BG_COLOR = (30, 35, 75)
+CELL_COLOR = (70, 90, 200)
+CELL_HIGHLIGHT = (190, 210, 255)
+CELL_BORDER = (120, 150, 220)
+GRID_BORDER_COLOR = (180, 200, 255)
+SHADOW_COLOR = (20, 20, 60)
+BLOCK_COLORS = [
+    (255, 80, 80),    # Red
+    (255, 210, 60),   # Yellow
+    (80, 200, 255),   # Blue
+    (120, 255, 120),  # Green
+    (200, 80, 220),   # Purple
+    (255, 140, 40),   # Orange
+]
+
+BLOCK_SHAPES = [
+    [[1, 1, 1]],            # 3-long horizontal
+    [[1], [1], [1]],        # 3-long vertical
+    [[1, 1], [1, 1]],       # 2x2 square
+    [[1, 1, 1, 1]],         # 4-long horizontal
+    [[1], [1], [1], [1]],   # 4-long vertical
+    [[1, 1, 0], [0, 1, 1]], # Z-shape
+    [[0, 1, 1], [1, 1, 0]], # S-shape
+    [[1, 1, 1], [0, 1, 0]], # T-shape
+    [[1, 0], [1, 0], [1, 1]], # L-shape
+    [[0, 1], [0, 1], [1, 1]], # Reverse L
+]
+
+def random_blocks(n=3):
+    return [
+        (random.choice(BLOCK_SHAPES), random.choice(BLOCK_COLORS))
+        for _ in range(n)
+    ]
+
+def draw_block(screen, shape, color, x, y, alpha=255, is_dragged=False):
+    for row_idx, row in enumerate(shape):
+        for col_idx, cell in enumerate(row):
+            if cell:
+                cell_x = x + col_idx * CELL_SIZE
+                cell_y = y + row_idx * CELL_SIZE
+                cell_rect = pygame.Rect(cell_x, cell_y, CELL_SIZE, CELL_SIZE)
+
+                # Draw shadow
+                shadow_offset = 4
+                shadow_rect = cell_rect.move(shadow_offset, shadow_offset)
+                pygame.draw.rect(screen, SHADOW_COLOR + (int(alpha * 0.5),), shadow_rect, border_radius=10)
+
+                # Main block (with higher border_radius for a pillowy look)
+                pygame.draw.rect(screen, color + (alpha,), cell_rect, border_radius=10)
+
+                # Glossy shine effect (top left ellipse)
+                gloss_rect = pygame.Rect(cell_x + 4, cell_y + 4, CELL_SIZE - 16, CELL_SIZE - 16)
+                pygame.draw.ellipse(screen, (255, 255, 255, int(alpha * 0.3)), gloss_rect)
+
+                # Outline (white)
+                pygame.draw.rect(screen, (255,255,255,alpha), cell_rect, 2, border_radius=10)
+
+                # Drag highlight
+                if is_dragged:
+                    pygame.draw.rect(screen, (255,255,100,160), cell_rect, 4, border_radius=12)
+
+def draw_grid(screen, board):
+    grid_rect = pygame.Rect(GRID_START_X-6, GRID_START_Y-6, GRID_WIDTH+12, GRID_HEIGHT+12)
+    pygame.draw.rect(screen, GRID_BORDER_COLOR, grid_rect, border_radius=12)
+    grid_bg_rect = pygame.Rect(GRID_START_X, GRID_START_Y, GRID_WIDTH, GRID_HEIGHT)
+    pygame.draw.rect(screen, GRID_BG_COLOR, grid_bg_rect, border_radius=8)
+    for row in range(GRID_SIZE):
+        for col in range(GRID_SIZE):
+            x = GRID_START_X + col * CELL_SIZE
+            y = GRID_START_Y + row * CELL_SIZE
+            cell_rect = pygame.Rect(x, y, CELL_SIZE, CELL_SIZE)
+            if board[row][col] is None:
+                pygame.draw.rect(screen, CELL_COLOR, cell_rect, border_radius=7)
+                shine_rect = pygame.Rect(x+3, y+3, CELL_SIZE-15, CELL_SIZE-15)
+                pygame.draw.rect(screen, CELL_HIGHLIGHT, shine_rect, border_radius=5)
+                pygame.draw.rect(screen, CELL_BORDER, cell_rect, 2, border_radius=7)
+            else:
+                draw_block(screen, [[1]], board[row][col], x, y)
+
+def get_block_area_rect(block_idx, shape):
+    area_y = GRID_START_Y + GRID_HEIGHT + 40
+    n = 3
+    total_width = n * 4 * CELL_SIZE + (n-1) * 24
+    start_x = (WIDTH - total_width) // 2
+    offset_x = (4 - len(shape[0])) * CELL_SIZE // 2
+    offset_y = (4 - len(shape)) * CELL_SIZE // 2
+    x = start_x + block_idx * (4*CELL_SIZE + 24) + offset_x
+    y = area_y + offset_y
+    w = len(shape[0]) * CELL_SIZE
+    h = len(shape) * CELL_SIZE
+    return pygame.Rect(x, y, w, h)
+
+def draw_blocks_area(screen, blocks, dragging_idx=None):
+    for i, (shape, color) in enumerate(blocks):
+        if dragging_idx is not None and i == dragging_idx:
+            continue
+        rect = get_block_area_rect(i, shape)
+        draw_block(screen, shape, color, rect.x, rect.y)
+
+def can_place(board, shape, top_left_row, top_left_col):
+    for i, row in enumerate(shape):
+        for j, cell in enumerate(row):
+            if cell:
+                r = top_left_row + i
+                c = top_left_col + j
+                if r < 0 or r >= GRID_SIZE or c < 0 or c >= GRID_SIZE:
+                    return False
+                if board[r][c] is not None:
+                    return False
+    return True
+
+def place_block(board, shape, color, top_left_row, top_left_col):
+    for i, row in enumerate(shape):
+        for j, cell in enumerate(row):
+            if cell:
+                board[top_left_row + i][top_left_col + j] = color
+
+def get_drop_position(mouse_x, mouse_y, shape):
+    grid_x = mouse_x - GRID_START_X
+    grid_y = mouse_y - GRID_START_Y
+    start_col = grid_x // CELL_SIZE
+    start_row = grid_y // CELL_SIZE
+    if 0 <= start_row < GRID_SIZE and 0 <= start_col < GRID_SIZE:
+        return start_row, start_col
+    return None, None
+
+def check_and_clear_lines(board):
+    full_rows = [row for row in range(GRID_SIZE) if all(board[row][c] is not None for c in range(GRID_SIZE))]
+    full_cols = [col for col in range(GRID_SIZE) if all(board[r][col] is not None for r in range(GRID_SIZE))]
+    for row in full_rows:
+        for c in range(GRID_SIZE):
+            board[row][c] = None
+    for col in full_cols:
+        for r in range(GRID_SIZE):
+            board[r][col] = None
+    return len(full_rows) + len(full_cols)
+
+def can_place_anywhere(board, shape):
+    for row in range(GRID_SIZE - len(shape) + 1):
+        for col in range(GRID_SIZE - len(shape[0]) + 1):
+            if can_place(board, shape, row, col):
+                return True
+    return False
+
+def any_block_can_be_placed(board, blocks):
+    for shape, color in blocks:
+        if can_place_anywhere(board, shape):
+            return True
+    return False
+
+def draw_score(screen, score):
+    font = pygame.font.SysFont("arial", 32, bold=True)
+    text = font.render(f"{score}", True, (255,255,255))
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, 25))
+
+def draw_game_over(screen):
+    font = pygame.font.SysFont("arial", 48, bold=True)
+    text = font.render("GAME OVER", True, (255,80,80))
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, HEIGHT//2 - text.get_height()//2))
+
+def heuristic(board):
+    # Favor more open space (empty cells)
+    return sum(cell is None for row in board for cell in row)
+
+def astar_best_move(board, blocks):
+    counter = itertools.count()
+    frontier = []
+    best_first = None
+    best_score = -float('inf')
+
+    initial_unused = tuple(range(len(blocks)))
+    initial_board = [row[:] for row in board]
+    heapq.heappush(frontier, (0, 0, 0, next(counter), initial_board, initial_unused, []))
+
+    while frontier:
+        neg_score, neg_h, depth, _, cur_board, unused, seq = heapq.heappop(frontier)
+        cur_score = -neg_score
+        cur_h = -neg_h
+
+        if depth == len(blocks) or not unused:
+            if cur_score > best_score:
+                best_score = cur_score
+                if seq:
+                    best_first = seq[0]
+            continue
+
+        for idx in unused:
+            shape, color = blocks[idx]
+            for row in range(GRID_SIZE - len(shape) + 1):
+                for col in range(GRID_SIZE - len(shape[0]) + 1):
+                    if can_place(cur_board, shape, row, col):
+                        new_board = [r[:] for r in cur_board]
+                        place_block(new_board, shape, color, row, col)
+                        lines = check_and_clear_lines(new_board)
+                        new_score = cur_score + lines
+                        h = heuristic(new_board)
+                        new_unused = tuple(i for i in unused if i != idx)
+                        new_seq = seq + [ (idx, row, col, shape, color) ]
+                        heapq.heappush(frontier, (-new_score, -h, depth+1, next(counter), new_board, new_unused, new_seq))
+    if best_first:
+        return best_first
+    return None
+
+def draw_hint_highlight(screen, row, col, shape):
+    for i, r in enumerate(shape):
+        for j, v in enumerate(r):
+            if v:
+                x = GRID_START_X + (col + j) * CELL_SIZE
+                y = GRID_START_Y + (row + i) * CELL_SIZE
+                s = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
+                pygame.draw.rect(s, (255,255,0,60), s.get_rect(), border_radius=12)
+                pygame.draw.rect(s, (255,220,80,180), s.get_rect(), 4, border_radius=12)
+                screen.blit(s, (x, y))
+
+def draw_title(screen):
+    font = pygame.font.SysFont("arial", 52, bold=True)
+    text = font.render("Block Blast", True, (255, 255, 255))
+    screen.blit(text, (WIDTH//2 - text.get_width()//2, 120))
+
+def draw_start_button(screen, hovered=False):
+    button_rect = pygame.Rect(WIDTH//2 - 80, 250, 160, 60)
+    color = (80, 200, 120) if hovered else (60, 160, 100)
+    pygame.draw.rect(screen, color, button_rect, border_radius=15)
+    pygame.draw.rect(screen, (255,255,255), button_rect, 3, border_radius=15)
+    font = pygame.font.SysFont("arial", 32, bold=True)
+    text = font.render("START", True, (255,255,255))
+    screen.blit(text, (button_rect.x + button_rect.width//2 - text.get_width()//2,
+                       button_rect.y + button_rect.height//2 - text.get_height()//2))
+    return button_rect
+
+def draw_quit_button(screen, hovered=False):
+    button_rect = pygame.Rect(WIDTH//2 - 80, 330, 160, 50)
+    color = (220, 60, 80) if hovered else (180, 40, 60)
+    pygame.draw.rect(screen, color, button_rect, border_radius=15)
+    pygame.draw.rect(screen, (255,255,255), button_rect, 2, border_radius=15)
+    font = pygame.font.SysFont("arial", 28, bold=True)
+    text = font.render("QUIT", True, (255,255,255))
+    screen.blit(text, (button_rect.x + button_rect.width//2 - text.get_width()//2,
+                       button_rect.y + button_rect.height//2 - text.get_height()//2))
+    return button_rect
+
+def start_screen(screen):
+    clock = pygame.time.Clock()
+    in_menu = True
+    start_hover = False
+    quit_hover = False
+
+    while in_menu:
+        mouse_pos = pygame.mouse.get_pos()
+        screen.fill(MENU_BG_COLOR)
+        draw_title(screen)
+        start_btn = draw_start_button(screen, hovered=start_hover)
+        quit_btn = draw_quit_button(screen, hovered=quit_hover)
+        pygame.display.flip()
+
+        start_hover = start_btn.collidepoint(mouse_pos)
+        quit_hover = quit_btn.collidepoint(mouse_pos)
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if start_hover:
+                    return  # Start Game!
+                elif quit_hover:
+                    pygame.quit()
+                    sys.exit()
+        clock.tick(FPS)
+
+def main_game(screen):
+    clock = pygame.time.Clock()
+    blocks = random_blocks(3)
+    board = [[None for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+    score = 0
+    game_over = False
+
+    dragging = False
+    drag_idx = None
+    drag_offset = (0, 0)
+    mouse_x, mouse_y = 0, 0
+
+    hint = None
+    show_hint = False
+
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if not game_over:
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    for i, (shape, color) in enumerate(blocks):
+                        rect = get_block_area_rect(i, shape)
+                        if rect.collidepoint(event.pos):
+                            dragging = True
+                            drag_idx = i
+                            drag_offset = (event.pos[0] - rect.x, event.pos[1] - rect.y)
+                            mouse_x, mouse_y = event.pos
+                            show_hint = False
+                            break
+
+                elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if dragging and drag_idx is not None:
+                        shape, color = blocks[drag_idx]
+                        grid_mouse_x = mouse_x - drag_offset[0] + CELL_SIZE//2
+                        grid_mouse_y = mouse_y - drag_offset[1] + CELL_SIZE//2
+                        drop_row, drop_col = get_drop_position(grid_mouse_x, grid_mouse_y, shape)
+                        if drop_row is not None and drop_col is not None:
+                            if can_place(board, shape, drop_row, drop_col):
+                                place_block(board, shape, color, drop_row, drop_col)
+                                cleared = check_and_clear_lines(board)
+                                score += 10
+                                score += 100 * cleared
+                                blocks.pop(drag_idx)
+                                while len(blocks) < 3:
+                                    blocks.extend(random_blocks(1))
+                                if not any_block_can_be_placed(board, blocks):
+                                    game_over = True
+                                show_hint = False
+                        dragging = False
+                        drag_idx = None
+
+                elif event.type == pygame.MOUSEMOTION:
+                    if dragging:
+                        mouse_x, mouse_y = event.pos
+
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_h:
+                    hint = astar_best_move(board, blocks)
+                    show_hint = True if hint else False
+
+        screen.fill(BG_COLOR)
+        draw_grid(screen, board)
+        draw_blocks_area(screen, blocks, dragging_idx=drag_idx if dragging else None)
+        draw_score(screen, score)
+
+        if dragging and drag_idx is not None:
+            shape, color = blocks[drag_idx]
+            draw_block(
+                screen, shape, color,
+                mouse_x - drag_offset[0],
+                mouse_y - drag_offset[1],
+                alpha=220,
+                is_dragged=True
+            )
+
+        if show_hint and hint:
+            _, row, col, shape, _ = hint
+            draw_hint_highlight(screen, row, col, shape)
+
+        if game_over:
+            draw_game_over(screen)
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+    pygame.quit()
+    sys.exit()
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Block Blast - Python Version")
+    start_screen(screen)
+    main_game(screen)
+
+if __name__ == "__main__":
+    main()
