@@ -45,7 +45,7 @@ python main.py
 
 ## 📸 Screenshots
 
-![AI Hint]()
+![AI Hint](Screenshot 2026-07-07 204038.png)
 
 ## 👩‍💻 Author
 
